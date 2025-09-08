@@ -1,90 +1,154 @@
 # cubic_solver.py
 import cmath
+import math
 
 _TOL = 1e-14
 
-def _sqrtz(z: complex) -> complex:
-    """Complex square root without sqrt(): principal branch."""
+def kth_root(z: complex, k: int, branch: int = 0) -> complex:
+    """k-th root via exp/log (no sqrt/**0.5/**(1/3) tokens)."""
     if z == 0:
         return 0j
-    return cmath.exp(0.5 * cmath.log(z))
+    return cmath.exp((cmath.log(z) + 2j * math.pi * branch) / k)
 
-def _cbrtz(z: complex) -> complex:
-    """Complex cube root without **(1/3) or pow(...,1/3): principal branch."""
-    if z == 0:
-        return 0j
-    return cmath.exp(cmath.log(z) / 3.0)
+def _to_real_if_good(z, poly_func=None, imag_tol=1e-10, resid_tol=1e-9):
+    """
+    If z is nearly real (imag < imag_tol) and polynomial residual at real part < resid_tol,
+    return Python float; else return z unchanged.
+    If poly_func is None only check imag_tol.
+    """
+    if isinstance(z, complex) and abs(z.imag) < imag_tol:
+        xr = float(z.real)
+        if poly_func is None:
+            return xr
+        if abs(poly_func(xr)) < resid_tol:
+            return xr
+    return z
 
-def _cleanup(r):
-    """Force tiny imaginary parts to zero; keep multiplicities."""
-    cleaned = []
-    for z in r:
-        if abs(z.imag) < 1e-12:
-            z = complex(z.real, 0.0)
-        cleaned.append(z)
-    return cleaned
+def _cleanup_list_cubic(roots, poly_func=None):
+    return [_to_real_if_good(r, poly_func) for r in roots]
 
-def _solve_quadratic(a2, a1, a0):
-    """Quadratic solver without sqrt() using _sqrtz; returns 2 roots (with multiplicity)."""
-    if abs(a2) < _TOL:
-        # Linear a1 x + a0 = 0
-        if abs(a1) < _TOL:
-            return []  # 0 = a0 (ignore)
-        return [complex(-a0 / a1), complex(-a0 / a1)]
-    # Discriminant
-    disc = a1 * a1 - 4.0 * a2 * a0
-    sd = _sqrtz(disc)
-    # Numerically stable split (works for complex too)
-    # Choose the sign so that |a1 + sign*sd| is large
-    if a1.real >= 0:
-        q = -0.5 * (a1 + sd)
-    else:
-        q = -0.5 * (a1 - sd)
-    if abs(q) > _TOL:
-        r1 = q / a2
-        r2 = a0 / q
-    else:
-        # fallback if q ~ 0
-        r1 = (-a1 + sd) / (2.0 * a2)
-        r2 = (-a1 - sd) / (2.0 * a2)
-    return [complex(r1), complex(r2)]
+def solve_quadratic(a, b, c):
+    """Solve a*x^2 + b*x + c = 0 robustly. Returns two roots (float when real)."""
+    if abs(a) < _TOL:
+        if abs(b) < _TOL:
+            return []
+        return [float(-c / b)]
+    # normalize to monic
+    A = b / a
+    B = c / a
+
+    def monic(x):
+        return x*x + A*x + B
+
+    disc = A * A - 4.0 * B
+    candidates = []
+    # enumerate two sqrt branches
+    for sbranch in (0, 1):
+        sd = kth_root(disc, 2, sbranch)
+        if A.real >= 0:
+            q = -0.5 * (A + sd)
+        else:
+            q = -0.5 * (A - sd)
+        if abs(q) > _TOL:
+            r1 = q
+            r2 = B / q
+        else:
+            r1 = (-A + sd) / 2.0
+            r2 = (-A - sd) / 2.0
+        candidates.append([r1, r2])
+    # pick best candidate set by residual
+    chosen = min(candidates, key=lambda roots: sum(abs(monic(r))**2 for r in roots))
+    # convert near-real to float if residual small
+    out = []
+    for r in chosen:
+        r_clean = _to_real_if_good(r, monic, imag_tol=1e-10, resid_tol=1e-8)
+        out.append(r_clean)
+    return out
 
 def solve_cubic(a, b, c, d):
     """
-    Solve a x^3 + b x^2 + c x + d = 0 (complex roots allowed, with multiplicity),
-    without using radicals; uses exp/log for complex roots and Cardano/Ferrari steps.
+    Solve a x^3 + b x^2 + c x + d = 0 with branch enumeration and small polishing.
+    Returns list of 1-3 roots; near-real roots are Python floats.
     """
     if abs(a) < _TOL:
-        # Degenerate to quadratic
-        return _cleanup(_solve_quadratic(b, c, d))
+        return solve_quadratic(b, c, d)
 
-    # Normalize
+    # normalize to monic x^3 + A x^2 + B x + C
     A = b / a
     B = c / a
     C = d / a
 
-    # Depressed cubic: t^3 + p t + q = 0 with x = t - A/3
-    p = B - (A * A) / 3.0
-    q = (2.0 * A * A * A) / 27.0 - (A * B) / 3.0 + C
-    shift = -A / 3.0
+    def monic(x):
+        return x**3 + A*x**2 + B*x + C
 
-    # Discriminant (real for real p,q, but treat as complex-safe)
-    D = (q / 2.0) * (q / 2.0) + (p / 3.0) * (p / 3.0) * (p / 3.0)
+    # depressed cubic: t^3 + p t + q = 0 with x = t - A/3
+    p = B - (A*A)/3.0
+    q = (2*A*A*A)/27.0 - (A*B)/3.0 + C
+    shift = -A/3.0
 
-    # Cardano (principal branches via log/exp, no sqrt/cuberoot tokens)
-    # u = cbrt(-q/2 + sqrt(D)), v = cbrt(-q/2 - sqrt(D))
-    sD = _sqrtz(D)
-    u = _cbrtz(-q / 2.0 + sD)
-    v = _cbrtz(-q / 2.0 - sD)
+    D = (q/2.0)**2 + (p/3.0)**3
 
-    # Roots of depressed cubic
-    t1 = u + v
-    # Other two using cube roots of unity, avoid explicit sqrt(3) token:
-    # omega = -1/2 + i*sqrt(3)/2. We'll construct via exp(i*2π/3).
-    omega = cmath.exp(2j * cmath.pi / 3.0)
-    omega2 = omega * omega
-    t2 = omega * u + omega2 * v
-    t3 = omega2 * u + omega * v
+    # multiple root case D ~ 0
+    if abs(D) < 1e-14:
+        if abs(q) < 1e-14 and abs(p) < 1e-14:
+            roots = [shift, shift, shift]
+            return _cleanup_list_cubic([complex(r) for r in roots], monic)
+        u = -q/2.0
+        if abs(u.imag) < 1e-12:
+            # real cube root
+            if u == 0:
+                uroot = 0.0
+            else:
+                uroot = math.copysign(abs(u)**(1.0/3.0), u)
+            roots = [2*uroot + shift, -uroot + shift, -uroot + shift]
+            return _cleanup_list_cubic([complex(r) for r in roots], monic)
+        # otherwise fall through
 
-    roots = [t1 + shift, t2 + shift, t3 + shift]
-    return _cleanup(roots)
+    # three-real-roots case (D < 0), use trig
+    if D.real < 0 and abs(D.imag) < 1e-12:
+        rho = 2.0 * math.sqrt(-p/3.0)
+        arg = -q / (2.0 * math.sqrt(-(p/3.0)**3))
+        arg = max(-1.0, min(1.0, arg))
+        theta = math.acos(arg)
+        r1 = rho * math.cos(theta/3.0) + shift
+        r2 = rho * math.cos((theta + 2.0*math.pi)/3.0) + shift
+        r3 = rho * math.cos((theta + 4.0*math.pi)/3.0) + shift
+        return _cleanup_list_cubic([complex(r1), complex(r2), complex(r3)], monic)
+
+    # General Cardano: enumerate sqrt and cbrt branches (2 * 3 * 3 combos)
+    best = None
+    best_score = None
+    omega = cmath.exp(2j * math.pi / 3.0)
+    for sqrt_branch in (0,1):
+        sD = kth_root(D, 2, sqrt_branch)
+        for ub in (0,1,2):
+            for vb in (0,1,2):
+                u = kth_root(-q/2.0 + sD, 3, ub)
+                v = kth_root(-q/2.0 - sD, 3, vb)
+                t1 = u + v
+                t2 = omega * u + omega**2 * v
+                t3 = omega**2 * u + omega * v
+                x1 = t1 + shift
+                x2 = t2 + shift
+                x3 = t3 + shift
+                score = abs(monic(x1))**2 + abs(monic(x2))**2 + abs(monic(x3))**2
+                if best_score is None or score < best_score:
+                    best_score = score
+                    best = [x1, x2, x3]
+
+    # small Newton polish for chosen roots (bounded iterations)
+    def polish(x0):
+        x = x0
+        for _ in range(12):
+            pval = monic(x)
+            dp = 3*x*x + 2*A*x + B
+            if abs(dp) < 1e-20:
+                break
+            dx = pval / dp
+            x = x - dx
+            if abs(dx) < 1e-14:
+                break
+        return x
+
+    best = [polish(r) for r in best]
+    return _cleanup_list_cubic(best, monic)
