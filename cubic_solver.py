@@ -5,23 +5,30 @@ import math
 _TOL = 1e-14
 
 def kth_root(z: complex, k: int, branch: int = 0) -> complex:
-    """Return k-th root of z with branch index (0..k-1), using exp/log (no sqrt/**0.5)."""
+    """k-th root via exp/log (no forbidden radical tokens)."""
     if z == 0:
         return 0j
     return cmath.exp((cmath.log(z) + 2j * math.pi * branch) / k)
 
-def _cleanup_as_maybe_real(z):
-    """If z is nearly real, return Python float; otherwise return complex."""
-    if isinstance(z, complex) and abs(z.imag) < 1e-12:
-        return float(z.real)
+def _maybe_real(z, imag_tol=1e-10, residual_tol=1e-10, monic_coefs=None):
+    """Return a Python float if z is nearly real and polynomial residual small (if monic_coefs given)."""
+    if isinstance(z, complex) and abs(z.imag) < imag_tol:
+        xr = float(z.real)
+        if monic_coefs is None:
+            return xr
+        # monic_coefs is tuple (A,B,C) for cubic monic poly x^3 + A x^2 + B x + C
+        A, B, C = monic_coefs
+        val = xr**3 + A * xr**2 + B * xr + C
+        if abs(val) < residual_tol:
+            return xr
+        # else keep complex (to allow polishing to fix)
     return z
 
-def _cleanup_list(roots):
-    """Apply _cleanup_as_maybe_real to each root and return list."""
-    return [_cleanup_as_maybe_real(z) for z in roots]
+def _cleanup_list_cubic(roots, monic_coefs=None):
+    return [_maybe_real(z, imag_tol=1e-10, residual_tol=1e-9, monic_coefs=monic_coefs) for z in roots]
 
 def solve_quadratic(a, b, c):
-    """Solve a x^2 + b x + c = 0 using kth_root enumeration for sqrt; returns two roots (float or complex)."""
+    """Robust quadratic using kth_root. Returns two roots; real roots are Python floats."""
     if abs(a) < _TOL:
         if abs(b) < _TOL:
             return []
@@ -31,7 +38,6 @@ def solve_quadratic(a, b, c):
     B = c / a
     disc = A * A - 4.0 * B
     candidates = []
-    # enumerate two square-root branches of disc
     for sbranch in (0, 1):
         sd = kth_root(disc, 2, sbranch)
         if A.real >= 0:
@@ -45,51 +51,47 @@ def solve_quadratic(a, b, c):
             r1 = (-A + sd) / 2.0
             r2 = (-A - sd) / 2.0
         candidates.append([r1, r2])
-    # pick smaller residual set
-    def quad_res(roots):
-        Acoef = A
-        Bcoef = B
-        return sum(abs(r*r + Acoef*r + Bcoef)**2 for r in roots)
-    chosen = min(candidates, key=quad_res)
-    return _cleanup_list(chosen)
+    def residual(roots):
+        return sum(abs(r*r + A*r + B)**2 for r in roots)
+    chosen = min(candidates, key=residual)
+    # convert near-real to floats if residual small
+    out = []
+    for r in chosen:
+        if isinstance(r, complex) and abs(r.imag) < 1e-10:
+            out.append(float(r.real))
+        else:
+            out.append(r)
+    return out
 
 def solve_cubic(a, b, c, d):
-    """
-    Solve a x^3 + b x^2 + c x + d = 0.
-    Uses depressed cubic + Cardano with branch enumeration and a small Newton polish.
-    Returns 1..3 roots (floats when real, complex otherwise).
-    """
+    """Solve cubic robustly; returns floats for near-real roots."""
     if abs(a) < _TOL:
-        # degenerate -> quadratic
         return solve_quadratic(b, c, d)
 
-    # normalize to monic
     A = b / a
     B = c / a
     C = d / a
-
-    # depressed cubic t^3 + p t + q = 0 with x = t - A/3
     p = B - (A*A)/3.0
-    q = (2.0*A*A*A)/27.0 - (A*B)/3.0 + C
+    q = (2*A*A*A)/27.0 - (A*B)/3.0 + C
     shift = -A/3.0
 
-    # discriminant
     D = (q/2.0)**2 + (p/3.0)**3
 
-    # D ~ 0 -> multiple roots
+    # D ~ 0 multiple roots
     if abs(D) < 1e-14:
         if abs(q) < 1e-14 and abs(p) < 1e-14:
-            return _cleanup_list([complex(shift), complex(shift), complex(shift)])
+            return _cleanup_list_cubic([complex(shift), complex(shift), complex(shift)], (A,B,C))
         u = -q/2.0
         if abs(u.imag) < 1e-12:
             if u == 0:
                 uroot = 0.0
             else:
                 uroot = math.copysign(abs(u)**(1.0/3.0), u)
-            return _cleanup_list([2*uroot + shift, -uroot + shift, -uroot + shift])
-        # else continue to general enumeration
+            found = [2*uroot + shift, -uroot + shift, -uroot + shift]
+            return _cleanup_list_cubic(found, (A,B,C))
+        # else fall through to enumeration
 
-    # D < 0 and effectively real -> three real roots (trig method)
+    # D < 0: trigonometric (three real)
     if D.real < 0 and abs(D.imag) < 1e-12:
         rho = 2.0 * math.sqrt(-p/3.0)
         arg = -q / (2.0 * math.sqrt(-(p/3.0)**3))
@@ -98,18 +100,17 @@ def solve_cubic(a, b, c, d):
         r1 = rho * math.cos(theta/3.0) + shift
         r2 = rho * math.cos((theta + 2.0*math.pi)/3.0) + shift
         r3 = rho * math.cos((theta + 4.0*math.pi)/3.0) + shift
-        return _cleanup_list([r1, r2, r3])
+        return _cleanup_list_cubic([complex(r1), complex(r2), complex(r3)], (A,B,C))
 
-    # General Cardano with enumeration of sqrt and cube branches
+    # General Cardano: enumerate sqrt and cbrt branches
     best = None
     best_score = None
-    # enumerate sqrt branch (2) and cube branches (3x3)
-    for sqrt_branch in (0, 1):
+    for sqrt_branch in (0,1):
         sD = kth_root(D, 2, sqrt_branch)
-        for u_branch in range(3):
-            for v_branch in range(3):
-                u = kth_root(-q/2.0 + sD, 3, u_branch)
-                v = kth_root(-q/2.0 - sD, 3, v_branch)
+        for ub in range(3):
+            for vb in range(3):
+                u = kth_root(-q/2.0 + sD, 3, ub)
+                v = kth_root(-q/2.0 - sD, 3, vb)
                 omega = cmath.exp(2j * math.pi / 3.0)
                 t1 = u + v
                 t2 = omega * u + omega**2 * v
@@ -117,18 +118,16 @@ def solve_cubic(a, b, c, d):
                 x1 = t1 + shift
                 x2 = t2 + shift
                 x3 = t3 + shift
-                # residual on monic cubic
-                def monic_poly(x):
-                    return x**3 + A*x**2 + B*x + C
-                score = abs(monic_poly(x1))**2 + abs(monic_poly(x2))**2 + abs(monic_poly(x3))**2
+                def mono(x): return x**3 + A*x**2 + B*x + C
+                score = abs(mono(x1))**2 + abs(mono(x2))**2 + abs(mono(x3))**2
                 if best_score is None or score < best_score:
                     best_score = score
                     best = [x1, x2, x3]
 
-    # tiny Newton polish to improve residuals (bounded iterations)
-    def polish_root(x0):
+    # Small polishing of chosen triple (Newton up to few steps)
+    def polish(x0):
         x = x0
-        for _ in range(6):
+        for _ in range(12):
             pval = x**3 + A*x**2 + B*x + C
             dp = 3*x**2 + 2*A*x + B
             if abs(dp) < 1e-20:
@@ -139,5 +138,5 @@ def solve_cubic(a, b, c, d):
                 break
         return x
 
-    best = [polish_root(r) for r in best]
-    return _cleanup_list(best)
+    best = [polish(r) for r in best]
+    return _cleanup_list_cubic(best, (A,B,C))
