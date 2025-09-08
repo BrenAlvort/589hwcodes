@@ -1,106 +1,145 @@
 # quartic_solver.py
 import cmath
-from cubic_solver import solve_cubic, _sqrtz, _cleanup, _TOL
+import math
+from cubic_solver import solve_cubic, solve_quadratic, kth_root, _to_real_if_good, _TOL
 
-def _solve_biquadratic(p, r):
-    """
-    Solve y^4 + p y^2 + r = 0 for y (returns 4 roots), without sqrt() token.
-    Let t = y^2: t^2 + p t + r = 0, then y = ±sqrtz(t).
-    """
-    # Solve t^2 + p t + r = 0
-    # Use the same quadratic helper logic but inlined to avoid import cycles.
-    a2, a1, a0 = 1.0, p, r
-    disc = a1 * a1 - 4.0 * a2 * a0
-    sd = _sqrtz(disc)
-    # Stable split
-    if a1.real >= 0:
-        q = -0.5 * (a1 + sd)
-    else:
-        q = -0.5 * (a1 - sd)
-    if abs(q) > _TOL:
-        t1 = q / a2
-        t2 = a0 / q
-    else:
-        t1 = (-a1 + sd) / (2.0 * a2)
-        t2 = (-a1 - sd) / (2.0 * a2)
+def _poly_mon(x, b, c, d, e):
+    return x**4 + b*x**3 + c*x**2 + d*x + e
 
-    y_roots = []
-    for t in (t1, t2):
-        s = _sqrtz(t)  # ± sqrt(t) via exp/log
-        y_roots.append(+s)
-        y_roots.append(-s)
-    return y_roots  # total 4 (with multiplicity)
+def _poly_and_deriv_mon(x, b, c, d, e):
+    p = x**4 + b*x**3 + c*x**2 + d*x + e
+    dp = 4*x**3 + 3*b*x**2 + 2*c*x + d
+    return p, dp
+
+def _polish_root(x0, b, c, d, e, maxiter=16):
+    x = x0
+    for _ in range(maxiter):
+        p, dp = _poly_and_deriv_mon(x, b, c, d, e)
+        if abs(dp) < 1e-20:
+            break
+        dx = p / dp
+        x = x - dx
+        if abs(dx) < 1e-14:
+            break
+    # if near-real and residual small, return Python float
+    if isinstance(x, complex) and abs(x.imag) < 1e-9:
+        if abs(_poly_mon(x.real, b, c, d, e)) < 1e-8:
+            return float(x.real)
+    return x
+
+def _positive_real_sqrt_via_log(x_real):
+    if x_real == 0.0:
+        return 0.0
+    return math.exp(0.5 * math.log(x_real))
 
 def solve_quartic(a, b, c, d, e):
-    """
-    Solve a x^4 + b x^3 + c x^2 + d x + e = 0
-    Returns exactly 4 roots (with multiplicity), complex allowed.
-    No use of sqrt/**0.5/pow(.,0.5) or cube-root exponents.
-    """
-    # Degeneracies
+    """Solve ax^4 + bx^3 + cx^2 + dx + e = 0; always returns 4 roots (float when real)."""
     if abs(a) < _TOL:
-        # Fall back to cubic
         return solve_cubic(b, c, d, e)
 
-    # Normalize to monic
+    # normalize
     b = b / a
     c = c / a
     d = d / a
     e = e / a
 
-    # Depress quartic: x = y - b/4  →  y^4 + p y^2 + q y + r = 0
-    B = b
-    p = c - 3.0 * (B * B) / 8.0
-    q = (B * B * B) / 8.0 - (B * c) / 2.0 + d
-    r = -3.0 * (B ** 4) / 256.0 + (B * B * c) / 16.0 - (B * d) / 4.0 + e
+    # depressed quartic coefficients
+    p = c - 3.0 * b * b / 8.0
+    q = b**3 / 8.0 - b * c / 2.0 + d
+    r = -3.0 * b**4 / 256.0 + b*b*c / 16.0 - b * d / 4.0 + e
 
-    # Special case: biquadratic (q ~ 0)
-    roots_y = []
-    if abs(q) < 1e-12:
-        roots_y = _solve_biquadratic(p, r)
+    def monic(x):
+        return x**4 + b*x**3 + c*x**2 + d*x + e
+
+    candidate_sets = []
+
+    # --- biquadratic: use robust quadratic to get exactly two t-values (t = y^2) ---
+    if abs(q) < 1e-14:
+        tvals = solve_quadratic(1.0, p, r)  # returns two roots (floats when real)
+        # ensure exactly two returned; solve_quadratic returns [] or one or two; handle robustly
+        if not tvals:
+            tvals = [0.0, 0.0]
+        elif len(tvals) == 1:
+            tvals = [tvals[0], tvals[0]]
+        # For each t enumerate sqrt branches; for real nonnegative t use positive real sqrt via log-exp
+        for t in tvals:
+            # if t is real number
+            if isinstance(t, (float, int)):
+                tr = float(t)
+                if tr >= -1e-12:
+                    tr = max(tr, 0.0)
+                    s = _positive_real_sqrt_via_log(tr)
+                    ys = [s, -s]
+                    roots = [ys[0] - b/4.0, -ys[0] - b/4.0, ys[1] - b/4.0, -ys[1] - b/4.0]
+                    roots = [_polish_root(r_, b, c, d, e) for r_ in roots]
+                    score = sum(abs(monic(rr))**2 for rr in roots)
+                    candidate_sets.append((score, roots))
+                    continue
+            # otherwise enumerate complex sqrt branches
+            for sbranch in (0,1):
+                s = kth_root(t, 2, sbranch)
+                ys = [s, -s]
+                roots = [ys[0] - b/4.0, -ys[0] - b/4.0, ys[1] - b/4.0, -ys[1] - b/4.0]
+                roots = [_polish_root(r_, b, c, d, e) for r_ in roots]
+                score = sum(abs(monic(rr))**2 for rr in roots)
+                candidate_sets.append((score, roots))
     else:
-        # Ferrari via resolvent cubic:
-        # z^3 - p z^2 - 4 r z + (4 r p - q^2) = 0
-        z_roots = solve_cubic(1.0, -p, -4.0 * r, 4.0 * r * p - q * q)
+        # --- general Ferrari via resolvent cubic ---
+        zvals = solve_cubic(1.0, -p, -4.0 * r, 4.0 * r * p - q * q)
+        for z in zvals:
+            zc = complex(z)
+            for u_branch in (0,1):
+                u = kth_root(2.0 * zc - p, 2, u_branch)
+                small_u = abs(u) < 1e-14
+                if not small_u:
+                    s1 = -(2.0 * zc + p + 2.0 * q / u)
+                    s2 = -(2.0 * zc + p - 2.0 * q / u)
+                    for t1_branch in (0,1):
+                        t1 = kth_root(s1, 2, t1_branch)
+                        for t2_branch in (0,1):
+                            t2 = kth_root(s2, 2, t2_branch)
+                            y1 = (-u + t1) / 2.0
+                            y2 = (-u - t1) / 2.0
+                            y3 = ( u + t2) / 2.0
+                            y4 = ( u - t2) / 2.0
+                            roots = [y1 - b/4.0, y2 - b/4.0, y3 - b/4.0, y4 - b/4.0]
+                            roots = [_polish_root(r_, b, c, d, e) for r_ in roots]
+                            score = sum(abs(monic(rr))**2 for rr in roots)
+                            candidate_sets.append((score, roots))
+                else:
+                    for s_alt_branch in (0,1):
+                        s_alt = kth_root(zc*zc - r, 2, s_alt_branch)
+                        for sqrt_z_branch in (0,1):
+                            sqrt_z = kth_root(zc, 2, sqrt_z_branch)
+                            y_candidates = [
+                                (sqrt_z + s_alt) / 2.0,
+                                (sqrt_z - s_alt) / 2.0,
+                                (-sqrt_z + s_alt) / 2.0,
+                                (-sqrt_z - s_alt) / 2.0
+                            ]
+                            roots = [y - b/4.0 for y in y_candidates]
+                            roots = [_polish_root(r_, b, c, d, e) for r_ in roots]
+                            score = sum(abs(monic(rr))**2 for rr in roots)
+                            candidate_sets.append((score, roots))
 
-        # Pick a z that avoids division by ~0 in u = sqrt(2 z - p)
-        # Preference: smallest |imag|, then largest Re; and |u| not tiny.
-        def score(z):
-            return (abs(z.imag), -z.real)
+    if not candidate_sets:
+        return [0.0, 0.0, 0.0, 0.0]
 
-        z_candidates = sorted(z_roots, key=score)
-        u = None
-        picked_z = None
-        for z in z_candidates:
-            u_try = _sqrtz(2.0 * z - p)
-            if abs(u_try) > 1e-10:  # avoid division by very small
-                picked_z = z
-                u = u_try
-                break
-        if u is None:
-            # all were tiny; take the first and proceed (q should be ~0, but we’re in else)
-            picked_z = z_candidates[0]
-            u = _sqrtz(2.0 * picked_z - p)
+    candidate_sets.sort(key=lambda t: t[0])
+    best_roots = candidate_sets[0][1]
 
-        z = picked_z
+    # final map: near-real complex -> float when residual small; keep complex otherwise
+    final = []
+    for r in best_roots:
+        if isinstance(r, complex) and abs(r.imag) < 1e-9:
+            val = monic(r.real)
+            if abs(val) < 1e-7:
+                final.append(float(r.real))
+                continue
+        final.append(r)
 
-        # Compute two inner quantities (can be complex)
-        # s1 = -(2 z + p + 2 q / u), s2 = -(2 z + p - 2 q / u)
-        two_z_plus_p = 2.0 * z + p
-        s1 = -(two_z_plus_p + 2.0 * q / u)
-        s2 = -(two_z_plus_p - 2.0 * q / u)
-
-        # Four roots in y (no sqrt token used)
-        t1 = _sqrtz(s1)
-        t2 = _sqrtz(s2)
-
-        roots_y = [(-u + t1) / 2.0,
-                   (-u - t1) / 2.0,
-                   ( u + t2) / 2.0,
-                   ( u - t2) / 2.0]
-
-    # Shift back: x = y - b/4
-    shift = -B / 4.0
-    roots_x = [y + shift for y in roots_y]
-
-    return _cleanup(roots_x)
+    # ensure exactly 4 roots
+    while len(final) < 4:
+        final.append(final[-1])
+    final = final[:4]
+    return final
