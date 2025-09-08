@@ -1,83 +1,54 @@
-import math
 import cmath
-
+import math
 
 def solve_cubic(a, b, c, d):
-    if abs(a) < 1e-14:
-        # Quadratic
+    if abs(a) < 1e-14:  # Degenerate to quadratic
         if abs(b) < 1e-14:
             if abs(c) < 1e-14:
                 return []
-            return [complex(-d / c)] * 1
-        return solve_quadratic(b, c, d)
+            return [-d / c]
+        delta = c**2 - 4 * b * d
+        sqrt_delta = cmath.sqrt(delta)
+        return [(-c + sqrt_delta) / (2 * b), (-c - sqrt_delta) / (2 * b)]
 
-    # Normalize
     A = b / a
     B = c / a
     C = d / a
 
-    # Depressed cubic: x³ + px + q = 0
-    p = B - A ** 2 / 3
-    q = (2 * A ** 3) / 27 - (A * B) / 3 + C
-
+    # Depressed cubic form: x³ + px + q = 0
+    p = B - A**2 / 3
+    q = 2 * A**3 / 27 - A * B / 3 + C
+    delta = (q / 2)**2 + (p / 3)**3
+    roots = []
     shift = -A / 3
 
-    discriminant = (q / 2) ** 2 + (p / 3) ** 3
+    def cbrt(z):
+        if z == 0:
+            return 0
+        r, theta = cmath.polar(z)
+        return cmath.rect(r**(1/3), theta / 3)
 
-    if discriminant > 0:
-        # One real root
-        sqrt_disc = trig_sqrt(discriminant)
-        u = trig_cbrt(-q / 2 + sqrt_disc)
-        v = trig_cbrt(-q / 2 - sqrt_disc)
-        root = u + v + shift
-        return [root] * 1 + [root.conjugate()] * 2 if abs(root.imag) > 1e-8 else [root]
-
-    elif abs(discriminant) < 1e-12:
-        # Triple root or double + single
-        if abs(q) < 1e-12:
-            root = shift
-            return [root] * 3
+    if delta > 1e-14:
+        sqrt_delta = cmath.sqrt(delta)
+        u = cbrt(-q / 2 + sqrt_delta)
+        v = cbrt(-q / 2 - sqrt_delta)
+        root1 = u + v + shift
+        root2 = -(u + v)/2 + shift + (u - v) * cmath.sqrt(3)/2j
+        root3 = -(u + v)/2 + shift - (u - v) * cmath.sqrt(3)/2j
+        roots = [root1, root2, root3]
+    elif abs(delta) <= 1e-14:
+        if abs(q) < 1e-14 and abs(p) < 1e-14:
+            roots = [shift, shift, shift]
         else:
-            u = trig_cbrt(-q / 2)
-            return [2 * u + shift, -u + shift, -u + shift]
-
+            u = cbrt(-q / 2)
+            roots = [2 * u + shift, -u + shift, -u + shift]
     else:
-        # Three real roots (discriminant < 0)
-        r = math.sqrt(-p ** 3 / 27)
-        phi = math.acos(-q / (2 * r))
-        t = 2 * math.sqrt(-p / 3)
-        roots = [
-            complex(t * math.cos(phi / 3) + shift),
-            complex(t * math.cos((phi + 2 * math.pi) / 3) + shift),
-            complex(t * math.cos((phi + 4 * math.pi) / 3) + shift),
-        ]
-        return roots
+        rho = math.sqrt(abs(p)**3 / 27)
+        theta = math.acos(max(min(-q / (2 * rho), 1), -1))
+        t = 2 * math.sqrt(abs(p) / 3)
+        root1 = t * math.cos(theta / 3) + shift
+        root2 = t * math.cos((theta + 2 * math.pi) / 3) + shift
+        root3 = t * math.cos((theta + 4 * math.pi) / 3) + shift
+        roots = [root1, root2, root3]
 
-
-def solve_quadratic(a, b, c):
-    if abs(a) < 1e-14:
-        return [-c / b] if abs(b) > 1e-14 else []
-    discriminant = b ** 2 - 4 * a * c
-    sqrt_disc = trig_sqrt(discriminant)
-    return [(-b + sqrt_disc) / (2 * a), (-b - sqrt_disc) / (2 * a)]
-
-
-def trig_cbrt(x):
-    # Cube root using trig/hyperbolic
-    if x >= 0:
-        return complex(math.exp(math.log(x) / 3))
-    else:
-        return complex(-math.exp(math.log(-x) / 3))
-
-
-def trig_sqrt(x):
-    if x >= 0:
-        # Use cosh identity: cosh(2u) = 2cosh²(u) - 1
-        cosh_2u = 1 + 2 * x  # reverse of identity
-        u = math.acosh(cosh_2u) / 2
-        return complex(math.cosh(u))
-    else:
-        # Use cos identity: cos(2θ) = 2cos²θ - 1
-        cos_2theta = 1 + 2 * x  # x < 0
-        theta = math.acos(cos_2theta) / 2
-        return complex(0, math.sin(theta))  # purely imaginary
+    return roots  # Keep as complex
