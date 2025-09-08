@@ -1,9 +1,8 @@
 # quartic_solver.py
 """
-Quartic solver using Ferrari / resolvent cubic with exhaustive small-branch enumeration.
-No forbidden radical tokens used (kth_root via exp/log).
-Always returns exactly 4 roots (with multiplicity). Near-real roots returned as float
-only if polynomial residual is tiny.
+Quartic solver using Ferrari/resolvent cubic with exhaustive branch enumeration
+and safe branch-selection heuristics. No forbidden radical tokens used.
+Always returns exactly 4 roots (with multiplicity).
 """
 
 import cmath
@@ -11,7 +10,7 @@ import math
 from cubic_solver import solve_cubic, solve_quadratic, kth_root, _to_real_if_good, _TOL
 
 def _positive_real_sqrt_via_log(x_real):
-    """Compute positive real sqrt for x_real >= 0 without sqrt token."""
+    """Positive real sqrt for x_real >= 0 using log/exp (no sqrt token)."""
     if x_real == 0.0:
         return 0.0
     return math.exp(0.5 * math.log(x_real))
@@ -25,6 +24,7 @@ def _poly_and_deriv_mon(x, b, c, d, e):
     return p, dp
 
 def _polish_root(x0, b, c, d, e, maxiter=16):
+    """Newton polishing; return float for near-real roots when residual tiny."""
     x = x0
     for _ in range(maxiter):
         p, dp = _poly_and_deriv_mon(x, b, c, d, e)
@@ -34,7 +34,6 @@ def _polish_root(x0, b, c, d, e, maxiter=16):
         x = x - dx
         if abs(dx) < 1e-14:
             break
-    # cast to float only when near-real and residual tiny
     if isinstance(x, complex) and abs(x.imag) < 1e-8:
         if abs(_poly_mon(x.real, b, c, d, e)) < 1e-7:
             return float(x.real)
@@ -43,19 +42,18 @@ def _polish_root(x0, b, c, d, e, maxiter=16):
 def solve_quartic(a, b, c, d, e):
     """
     Solve a x^4 + b x^3 + c x^2 + d x + e = 0.
-    Returns exactly 4 roots (complex or floats for near-real validated roots).
+    Returns exactly 4 roots (floats for validated near-real roots).
     """
     if abs(a) < _TOL:
-        # Degenerate to cubic
         return solve_cubic(b, c, d, e)
 
-    # Normalize to monic
+    # normalize to monic
     b = b / a
     c = c / a
     d = d / a
     e = e / a
 
-    # Depressed quartic y^4 + p y^2 + q y + r = 0 with x = y - b/4
+    # depressed quartic: y^4 + p y^2 + q y + r = 0 (x = y - b/4)
     p = c - 3.0 * b * b / 8.0
     q = b*b*b / 8.0 - b * c / 2.0 + d
     r = -3.0 * b**4 / 256.0 + b*b*c / 16.0 - b * d / 4.0 + e
@@ -66,16 +64,15 @@ def solve_quartic(a, b, c, d, e):
 
     # BIQUADRATIC special-case (q ~ 0)
     if abs(q) < 1e-14:
-        # Solve t^2 + p t + r = 0 (t = y^2)
         t_vals = solve_quadratic(1.0, p, r)
-        # Ensure two t-values (quadratic returns two values)
+        # ensure two t-values with multiplicity handling
         if len(t_vals) == 0:
             t_vals = [0.0, 0.0]
         elif len(t_vals) == 1:
             t_vals = [t_vals[0], t_vals[0]]
 
         for t in t_vals:
-            # If nearly real and non-negative prefer true real sqrt via log-exp
+            # If nearly real and non-negative => prefer real sqrt via log/exp
             if isinstance(t, complex) and abs(t.imag) < 1e-10:
                 tr = float(t.real)
                 if tr >= -1e-12:
@@ -87,7 +84,7 @@ def solve_quartic(a, b, c, d, e):
                     score = sum(abs(monic(rr))**2 for rr in roots)
                     candidate_sets.append((score, roots))
                     continue
-            # enumerate complex sqrt branches via kth_root
+            # otherwise enumerate complex sqrt branches using kth_root
             for sb in (0,1):
                 s = kth_root(t, 2, sb)
                 ys = [s, -s]
@@ -97,8 +94,7 @@ def solve_quartic(a, b, c, d, e):
                 candidate_sets.append((score, roots))
 
     else:
-        # GENERAL CASE: resolvent cubic (Ferrari)
-        # z^3 - p z^2 - 4 r z + (4 r p - q^2) = 0
+        # general resolvent cubic (Ferrari)
         zvals = solve_cubic(1.0, -p, -4.0 * r, 4.0 * r * p - q * q)
         if len(zvals) == 0:
             zvals = [0.0]
@@ -124,7 +120,7 @@ def solve_quartic(a, b, c, d, e):
                             score = sum(abs(monic(rr))**2 for rr in roots)
                             candidate_sets.append((score, roots))
                 else:
-                    # fallback enumeration when u ~ 0
+                    # fallback when u is very small
                     for s_alt_branch in (0,1):
                         s_alt = kth_root(zc*zc - r, 2, s_alt_branch)
                         for sqrt_z_branch in (0,1):
@@ -141,14 +137,13 @@ def solve_quartic(a, b, c, d, e):
                             candidate_sets.append((score, roots))
 
     if not candidate_sets:
-        # fallback
         return [0.0, 0.0, 0.0, 0.0]
 
-    # choose candidate set with minimal residual score
+    # pick candidate with smallest residual score
     candidate_sets.sort(key=lambda t: t[0])
     best_roots = candidate_sets[0][1]
 
-    # final cleanup: cast near-real complex -> float only when residual tiny
+    # final cleanup and cast near-real complex -> float only if residual tiny
     final = []
     for r in best_roots:
         if isinstance(r, complex) and abs(r.imag) < 1e-8:
