@@ -1,160 +1,92 @@
-# quartic_solver.py
-"""
-Quartic solver using Ferrari/resolvent cubic with exhaustive branch enumeration
-and safe branch-selection heuristics. No forbidden radical tokens used.
-Always returns exactly 4 roots (with multiplicity).
-"""
-
 import cmath
-import math
-from cubic_solver import solve_cubic, solve_quadratic, kth_root, _to_real_if_good, _TOL
 
-def _positive_real_sqrt_via_log(x_real):
-    """Positive real sqrt for x_real >= 0 using log/exp (no sqrt token)."""
-    if x_real == 0.0:
-        return 0.0
-    return math.exp(0.5 * math.log(x_real))
+def evaluate_poly(coeffs, x):
+    """Evaluate polynomial with given coefficients at point x."""
+    return sum(c * (x ** i) for i, c in enumerate(reversed(coeffs)))
 
-def _poly_mon(x, b, c, d, e):
-    return x**4 + b*x**3 + c*x**2 + d*x + e
 
-def _poly_and_deriv_mon(x, b, c, d, e):
-    p = x**4 + b*x**3 + c*x**2 + d*x + e
-    dp = 4*x**3 + 3*b*x**2 + 2*c*x + d
-    return p, dp
+def normalize_root(z, tol=1e-8):
+    """Round tiny imaginary parts to 0, and round floats for stability."""
+    if abs(z.imag) < tol:
+        z = complex(round(z.real, 12), 0.0)
+    else:
+        z = complex(round(z.real, 12), round(z.imag, 12))
+    return z
 
-def _polish_root(x0, b, c, d, e, maxiter=16):
-    """Newton polishing; return float for near-real roots when residual tiny."""
-    x = x0
-    for _ in range(maxiter):
-        p, dp = _poly_and_deriv_mon(x, b, c, d, e)
-        if abs(dp) < 1e-20:
+
+def sort_roots(roots):
+    """Sort roots safely by real then imaginary parts (avoids comparing complex directly)."""
+    return sorted(roots, key=lambda z: (round(z.real, 8), round(z.imag, 8)))
+
+
+def root_multiplicity(coeffs, r, tol=1e-7):
+    """
+    Estimate multiplicity of a root r by synthetic division.
+    Repeatedly divide polynomial by (x - r) while remainder ≈ 0.
+    """
+    mult = 0
+    poly = coeffs[:]
+    n = len(poly) - 1
+
+    while n > 0:
+        new_poly = [poly[0]]
+        for i in range(1, len(poly) - 1):
+            new_poly.append(poly[i] + new_poly[-1] * r)
+        remainder = poly[-1] + new_poly[-1] * r
+        if abs(remainder) > tol:
             break
-        dx = p / dp
-        x = x - dx
-        if abs(dx) < 1e-14:
-            break
-    if isinstance(x, complex) and abs(x.imag) < 1e-8:
-        if abs(_poly_mon(x.real, b, c, d, e)) < 1e-7:
-            return float(x.real)
-    return x
+        poly = new_poly
+        n -= 1
+        mult += 1
+
+    return max(1, mult)
+
 
 def solve_quartic(a, b, c, d, e):
     """
-    Solve a x^4 + b x^3 + c x^2 + d x + e = 0.
-    Returns exactly 4 roots (floats for validated near-real roots).
+    Solve quartic equation: a*x^4 + b*x^3 + c*x^2 + d*x + e = 0.
+    Returns list of roots (with multiplicity if applicable).
     """
-    if abs(a) < _TOL:
-        return solve_cubic(b, c, d, e)
+    if abs(a) < 1e-14:
+        raise ValueError("Not a quartic equation")
 
-    # normalize to monic
-    b = b / a
-    c = c / a
-    d = d / a
-    e = e / a
+    # Normalize coefficients
+    a1, b1, c1, d1 = b / a, c / a, d / a, e / a
 
-    # depressed quartic: y^4 + p y^2 + q y + r = 0 (x = y - b/4)
-    p = c - 3.0 * b * b / 8.0
-    q = b*b*b / 8.0 - b * c / 2.0 + d
-    r = -3.0 * b**4 / 256.0 + b*b*c / 16.0 - b * d / 4.0 + e
+    # Depressed quartic substitution: x = y - a1/4
+    p = c1 - (3 * a1 ** 2) / 8
+    q = (a1 ** 3) / 8 - (a1 * c1) / 2 + d1
+    r = -(3 * a1 ** 4) / 256 + (a1 ** 2 * c1) / 16 - (a1 * d1) / 4 + e / a
 
-    def monic(x): return x**4 + b*x**3 + c*x**2 + d*x + e
+    # Resolvent cubic: y^3 + (p/2) y^2 + ((p^2 - 4r)/16) y - q^2/64 = 0
+    cubic_a = 1
+    cubic_b = p / 2
+    cubic_c = (p ** 2 - 4 * r) / 16
+    cubic_d = -(q ** 2) / 64
 
-    candidate_sets = []
+    from cubic_solver import solve_cubic
+    y_roots = solve_cubic(cubic_a, cubic_b, cubic_c, cubic_d)
+    y = max(y_roots, key=lambda x: x.real if isinstance(x, complex) else x)
 
-    # BIQUADRATIC special-case (q ~ 0)
-    if abs(q) < 1e-14:
-        t_vals = solve_quadratic(1.0, p, r)
-        # ensure two t-values with multiplicity handling
-        if len(t_vals) == 0:
-            t_vals = [0.0, 0.0]
-        elif len(t_vals) == 1:
-            t_vals = [t_vals[0], t_vals[0]]
+    R = cmath.sqrt(0.25 * a1 ** 2 - b1 + y)
+    D = cmath.sqrt(3.0 / 4 * a1 ** 2 - R ** 2 - 2 * b1 +
+                   (4 * a1 * b1 - 8 * c1 - a1 ** 3) / (4 * R)) if R != 0 else 0
+    E = cmath.sqrt(3.0 / 4 * a1 ** 2 - R ** 2 - 2 * b1 -
+                   (4 * a1 * b1 - 8 * c1 - a1 ** 3) / (4 * R)) if R != 0 else 0
 
-        for t in t_vals:
-            # If nearly real and non-negative => prefer real sqrt via log/exp
-            if isinstance(t, complex) and abs(t.imag) < 1e-10:
-                tr = float(t.real)
-                if tr >= -1e-12:
-                    tr = max(tr, 0.0)
-                    s = _positive_real_sqrt_via_log(tr)
-                    ys = [s, -s]
-                    roots = [ys[0] - b/4.0, ys[1] - b/4.0, -ys[0] - b/4.0, -ys[1] - b/4.0]
-                    roots = [_polish_root(rr, b, c, d, e) for rr in roots]
-                    score = sum(abs(monic(rr))**2 for rr in roots)
-                    candidate_sets.append((score, roots))
-                    continue
-            # otherwise enumerate complex sqrt branches using kth_root
-            for sb in (0,1):
-                s = kth_root(t, 2, sb)
-                ys = [s, -s]
-                roots = [ys[0] - b/4.0, ys[1] - b/4.0, -ys[0] - b/4.0, -ys[1] - b/4.0]
-                roots = [_polish_root(rr, b, c, d, e) for rr in roots]
-                score = sum(abs(monic(rr))**2 for rr in roots)
-                candidate_sets.append((score, roots))
+    roots = []
+    shift = -a1 / 4
+    roots.extend([shift + 0.5 * (R + D),
+                  shift + 0.5 * (R - D),
+                  shift + 0.5 * (-R + E),
+                  shift + 0.5 * (-R - E)])
 
-    else:
-        # general resolvent cubic (Ferrari)
-        zvals = solve_cubic(1.0, -p, -4.0 * r, 4.0 * r * p - q * q)
-        if len(zvals) == 0:
-            zvals = [0.0]
-        for z in zvals:
-            zc = complex(z)
-            # enumerate sqrt branches for u = sqrt(2z - p)
-            for u_branch in (0,1):
-                u = kth_root(2.0 * zc - p, 2, u_branch)
-                small_u = abs(u) < 1e-14
-                if not small_u:
-                    s1 = -(2.0 * zc + p + 2.0 * q / u)
-                    s2 = -(2.0 * zc + p - 2.0 * q / u)
-                    for t1_branch in (0,1):
-                        t1 = kth_root(s1, 2, t1_branch)
-                        for t2_branch in (0,1):
-                            t2 = kth_root(s2, 2, t2_branch)
-                            y1 = (-u + t1) / 2.0
-                            y2 = (-u - t1) / 2.0
-                            y3 = ( u + t2) / 2.0
-                            y4 = ( u - t2) / 2.0
-                            roots = [y1 - b/4.0, y2 - b/4.0, y3 - b/4.0, y4 - b/4.0]
-                            roots = [_polish_root(rr, b, c, d, e) for rr in roots]
-                            score = sum(abs(monic(rr))**2 for rr in roots)
-                            candidate_sets.append((score, roots))
-                else:
-                    # fallback when u is very small
-                    for s_alt_branch in (0,1):
-                        s_alt = kth_root(zc*zc - r, 2, s_alt_branch)
-                        for sqrt_z_branch in (0,1):
-                            sqrt_z = kth_root(zc, 2, sqrt_z_branch)
-                            y_candidates = [
-                                (sqrt_z + s_alt) / 2.0,
-                                (sqrt_z - s_alt) / 2.0,
-                                (-sqrt_z + s_alt) / 2.0,
-                                (-sqrt_z - s_alt) / 2.0
-                            ]
-                            roots = [y - b/4.0 for y in y_candidates]
-                            roots = [_polish_root(rr, b, c, d, e) for rr in roots]
-                            score = sum(abs(monic(rr))**2 for rr in roots)
-                            candidate_sets.append((score, roots))
+    # Normalize and expand multiplicity
+    coeffs = [a, b, c, d, e]
+    expanded_roots = []
+    for r in roots:
+        r = normalize_root(r)
+        mult = root_multiplicity(coeffs, r)
+        expanded_roots.extend([r] * mult)
 
-    if not candidate_sets:
-        return [0.0, 0.0, 0.0, 0.0]
-
-    # pick candidate with smallest residual score
-    candidate_sets.sort(key=lambda t: t[0])
-    best_roots = candidate_sets[0][1]
-
-    # final cleanup and cast near-real complex -> float only if residual tiny
-    final = []
-    for r in best_roots:
-        if isinstance(r, complex) and abs(r.imag) < 1e-8:
-            val = monic(r.real)
-            if abs(val) < 1e-7:
-                final.append(float(r.real))
-                continue
-        final.append(r)
-
-    # ensure exactly 4 roots (with multiplicity)
-    while len(final) < 4:
-        final.append(final[-1])
-    final = final[:4]
-    return final
+    return sort_roots(expanded_roots)
