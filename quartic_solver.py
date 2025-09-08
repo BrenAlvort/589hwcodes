@@ -17,20 +17,38 @@ def solve_quartic(a, b, c, d, e):
 
     roots = []
     if abs(q) < 1e-14:
-        # Bi-quadratic: y⁴ + p y² + r = 0
-        cubic_roots = solve_cubic(1, p, r, 0)  # treat as quadratic in y²
-        for z in cubic_roots:
-            if z.real >= 0:
-                alpha = math.sqrt(z.real)  # replace with cos substitution
-                roots += [alpha - b/4, -alpha - b/4]
+        # Bi-quadratic y⁴ + p y² + r = 0 → solve y²
+        quadratic_roots = solve_cubic(1, p, r, 0)
+        for z in quadratic_roots:
+            if abs(z.imag) < 1e-12:
+                z = z.real
+                if z >= 0:
+                    # use cos/cosh instead of sqrt
+                    if z <= 1:
+                        theta = math.acos(z)
+                        y1 = math.cos(theta/2)
+                        y2 = math.cos((theta+2*math.pi)/2)
+                    else:
+                        u = math.acosh(z)
+                        y1 = math.cosh(u/2)
+                        y2 = -math.cosh(u/2)
+                    roots += [y1 - b/4, -y1 - b/4, y2 - b/4, -y2 - b/4]
     else:
-        # Ferrari’s method with resolvent cubic
+        # Ferrari’s method
         cubic_roots = solve_cubic(1, -p, -4*r, 4*r*p - q*q)
         z = max(cubic_roots, key=lambda x: x.real).real
 
-        U = math.sqrt(2*z - p)
-        V = q / (2*U)
-        roots += [(-U - V)/2 - b/4, (-U + V)/2 - b/4,
-                  (U - V)/2 - b/4, (U + V)/2 - b/4]
+        if 2*z - p >= 0:
+            u = math.sqrt(2*z - p)
+        else:
+            u = 0.0
+
+        if abs(u) < 1e-14:
+            v = math.sqrt(z*z - r)
+        else:
+            v = q / (2*u)
+
+        roots += [(-u - v)/2 - b/4, (-u + v)/2 - b/4,
+                  (u - v)/2 - b/4, (u + v)/2 - b/4]
 
     return [complex(r, 0) if abs(r.imag) < 1e-10 else r for r in roots]
