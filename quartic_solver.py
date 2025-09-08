@@ -1,4 +1,4 @@
-﻿import cmath
+import cmath
 import math
 from cubic_solver import solve_cubic
 
@@ -6,45 +6,46 @@ def solve_quartic(a, b, c, d, e):
     if abs(a) < 1e-14:
         return solve_cubic(b, c, d, e)
 
-    # Normalize
     b /= a
     c /= a
     d /= a
     e /= a
 
-    # Depressed quartic coefficients
+    # Depressed quartic: y⁴ + p*y² + q*y + r
     p = c - 3 * b**2 / 8
     q = b**3 / 8 - b * c / 2 + d
     r = -3 * b**4 / 256 + b**2 * c / 16 - b * d / 4 + e
+
     roots = []
 
-    if abs(q) < 1e-14:
-        discriminant = p**2 - 4 * r
-        sqrt_disc = cmath.sqrt(discriminant)
-        y1 = (-p + sqrt_disc) / 2
-        y2 = (-p - sqrt_disc) / 2
-        for y in [y1, y2]:
-            sqrt_y = cmath.sqrt(y)
-            roots.append(sqrt_y - b / 4)
-            roots.append(-sqrt_y - b / 4)
+    if abs(q) < 1e-12:
+        # biquadratic equation: y⁴ + py² + r = 0 ⇒ solve as quadratic in y²
+        quad_roots = solve_cubic(1, p, r, 0)  # treat as degenerate cubic
+        for y2 in quad_roots:
+            y = safe_complex_sqrt(y2)
+            roots.append(y - b / 4)
+            roots.append(-y - b / 4)
     else:
-        # Solve resolvent cubic
-        cubic_roots = solve_cubic(8, -4 * p, -8 * r, 4 * r * p - q**2)
+        # Resolvent cubic: z³ - (p/2)z² - r*z + (4r*p - q²)/8 = 0
+        cubic_roots = solve_cubic(1, -p/2, -r, (4*r*p - q**2)/8)
+        z = max(cubic_roots, key=lambda x: x.real).real
 
-        # Pick the best root
-        real_roots = [z for z in cubic_roots if abs(z.imag) < 1e-10]
-        z = max(real_roots, key=lambda x: x.real) if real_roots else max(cubic_roots, key=lambda x: x.real)
-        z = z.real
-
-        u = cmath.sqrt(2 * z - p)
+        u = safe_complex_sqrt(2*z - p)
         if abs(u) < 1e-14:
-            v = cmath.sqrt(z**2 - r)
+            v = safe_complex_sqrt(z**2 - r)
         else:
-            v = q / (2 * u)
+            v = q / (2*u)
 
         roots.append((-u - v) / 2 - b / 4)
         roots.append((-u + v) / 2 - b / 4)
         roots.append((u - v) / 2 - b / 4)
         roots.append((u + v) / 2 - b / 4)
 
-    return roots  # Keep complex parts if needed
+    return roots
+
+def safe_complex_sqrt(z):
+    # Use trigonometric identity to compute sqrt
+    if isinstance(z, complex) or z < 0:
+        return cmath.sqrt(z)
+    else:
+        return complex(math.cos(math.acos((2 * z - 1)) / 2))  # From cos(2θ)=2cos²θ−1
